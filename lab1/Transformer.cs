@@ -16,6 +16,8 @@ public class Transformer
 
     private Matrix4x4 _resultTransformer;
 
+    private Matrix4x4 _modelMatrix;
+
     public IReadOnlyList<Vector3> Transform(IReadOnlyList<Vector3> vertices)
     {
 
@@ -30,10 +32,16 @@ public class Transformer
 
     public void RecalculateResultTransform()
     {
-        var modelMatrix = WorldTransform.GetTransformationMatrix();
+        _modelMatrix = WorldTransform.GetTransformationMatrix();
         var viewMatrix = ObserverTransform.GetMatrix();
         var projectionMatrix = ProjectionTransform.GetMatrix();
         var viewportMatrix = WindowTransform.GetMatrix();
-        _resultTransformer = modelMatrix * viewMatrix * projectionMatrix * viewportMatrix;
+        _resultTransformer = _modelMatrix * viewMatrix * projectionMatrix * viewportMatrix;
+    }
+
+    public Vector3 TransformToWorld(Vector3 vertex)
+    {
+        var v4 = Vector4.Transform(vertex, _modelMatrix);
+        return new Vector3(v4.X, v4.Y, v4.Z);
     }
 }
