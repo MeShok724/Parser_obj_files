@@ -7,7 +7,7 @@ using System.Threading.Tasks;
 
 public class ObserverTransform
 {
-    public Vector3 Eye { get; set; } = new Vector3 { X = 0, Y = 0, Z = 100 };
+    public Vector3 Eye { get; set; } = new Vector3 { X = 0, Y = 0, Z = 10 };
     public Vector3 Target { get; set; } = Vector3.Zero;
 
     private static readonly Vector3 Up = new(0, 1, 0);
