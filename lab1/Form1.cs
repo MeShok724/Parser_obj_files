@@ -1,13 +1,18 @@
+using lab1.lab4;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Numerics;
 using System.Windows.Forms;
+using static ObjParser;
 
 namespace lab1
 {
     public partial class Form1 : Form
     {
         private Bitmap _bitmap;
+        private Texture _diffuseTexture;
+        private readonly Texture _normalMap;
+        private readonly Texture _specularMap;
         private Graphics _graphics;
         private Transformer _transformer;
         private ObjParser _objParser;
@@ -17,11 +22,13 @@ namespace lab1
 
         private readonly IReadOnlyList<Vector3> _vertices;
         private Vector3[] _worldVertices;
-        private readonly IReadOnlyList<(int, int, int)> _triangles;
+        private readonly IReadOnlyList<(FaceIndices, FaceIndices, FaceIndices)> _triangles;
+        private readonly IReadOnlyList<Vector2> _textureCoordinates;
+        private IReadOnlyList<Vector3> _vertexNormals;
 
         private static readonly Vector3 _light = -new Vector3(1, 1, 1);
         private static readonly Vector3 _color = new Vector3(255, 255, 255);
-        private static readonly Vector3 _ambient = _color * 0.05f;
+        private static readonly float _ambientCoeff = 1.0f;
         private static readonly float _specularPower = 15f;
         private static readonly float _diffuseCoeff = 0.7f;
 
@@ -34,7 +41,10 @@ namespace lab1
 
             DoubleBuffered = true;
             WindowState = FormWindowState.Maximized;
-            const string path = "../../../objs/figure.obj";
+            const string path = "../../../objs/craneo/craneo.OBJ";
+            const string diffuse_path = "../../../objs/craneo/craneo_diffuse.jpg";
+            const string normal_path = "../../../objs/craneo/craneo_normal.png";
+            const string specular_path = "../../../objs/craneo/craneo_specular.jpg";
 
             Paint += OnPaint;
             KeyDown += OnKeyDown;
@@ -49,8 +59,13 @@ namespace lab1
 
             _objParser = new ObjParser();
             _vertices = ObjParser.ParseVertices(path);
-            _triangles = ObjParser.ParseFaces(path);
+            _triangles = ObjParser.ParseFacesWithUV(path);
+            _textureCoordinates = ObjParser.ParseTextureCords(path);
+            _vertexNormals = ObjParser.ParseNormals(path);
             _transformer = new Transformer();
+            _diffuseTexture = new Texture(diffuse_path);
+            _normalMap = new Texture(normal_path);
+            _specularMap = new Texture(specular_path);
         }
 
         private void ApplyTransformations(object? sender, EventArgs e)
@@ -114,10 +129,10 @@ namespace lab1
 
         private void OnPaint(object sender, PaintEventArgs e)
         {
-            var transformedVertices = _transformer.Transform(_vertices);
+            var (transformedVertices, oneOverWs) = _transformer.Transform(_vertices);
             _worldVertices = _vertices.Select(v => _transformer.TransformToWorld(v)).ToArray();
             var filteredTriangles = FilterTriangles(transformedVertices);
-            var vertexNormals = ComputeVertexNormals();
+            //var vertexNormals = ComputeVertexNormals();
 
             _graphics.Clear(Color.Black);
             var data = _bitmap.LockBits(new Rectangle(0, 0, _width, _height),
@@ -135,23 +150,23 @@ namespace lab1
                 Parallel.ForEach(filteredTriangles, triangle =>
                 {
                     var (i1, i2, i3) = triangle;
-                    RenderTriangle(transformedVertices, vertexNormals, i1, i2, i3, ptr, stride);
+                    RenderTriangle(transformedVertices, oneOverWs, i1, i2, i3, ptr, stride);
                 });
             }
             _bitmap.UnlockBits(data);
             e.Graphics.DrawImage(_bitmap, 0, 0);
         }
 
-        private List<(int, int, int)> FilterTriangles(IReadOnlyList<Vector3> transformedVertices)
+        private List<(FaceIndices, FaceIndices, FaceIndices)> FilterTriangles(IReadOnlyList<Vector3> transformedVertices)
         {
             return _triangles
                 .AsParallel()
                 .Where(triangle =>
                 {
                     var (i1, i2, i3) = triangle;
-                    var p1V2 = new Vector2(transformedVertices[i1].X, transformedVertices[i1].Y);
-                    var p2V2 = new Vector2(transformedVertices[i2].X, transformedVertices[i2].Y);
-                    var p3V2 = new Vector2(transformedVertices[i3].X, transformedVertices[i3].Y);
+                    var p1V2 = new Vector2(transformedVertices[i1.VertexIndex].X, transformedVertices[i1.VertexIndex].Y);
+                    var p2V2 = new Vector2(transformedVertices[i2.VertexIndex].X, transformedVertices[i2.VertexIndex].Y);
+                    var p3V2 = new Vector2(transformedVertices[i3.VertexIndex].X, transformedVertices[i3.VertexIndex].Y);
 
                     var v1 = p2V2 - p1V2;
                     var v2 = p3V2 - p1V2;
@@ -164,28 +179,32 @@ namespace lab1
 
         private unsafe void RenderTriangle(
             IReadOnlyList<Vector3> transformedVertices,
-            IReadOnlyList<Vector3> vertexNormals,
-            int i1, int i2, int i3,
+            IReadOnlyList<float> oneOverWs,
+            FaceIndices i1, FaceIndices i2, FaceIndices i3,
             int* ptr, int stride)
         {
-            var p1 = transformedVertices[i1];
-            var p2 = transformedVertices[i2];
-            var p3 = transformedVertices[i3];
+            var p1 = transformedVertices[i1.VertexIndex];
+            var p2 = transformedVertices[i2.VertexIndex];
+            var p3 = transformedVertices[i3.VertexIndex];
 
-            var n1 = Vector3Utils.NormalizeSafe(vertexNormals[i1]);
-            var n2 = Vector3Utils.NormalizeSafe(vertexNormals[i2]);
-            var n3 = Vector3Utils.NormalizeSafe(vertexNormals[i3]);
+            var wp1 = _worldVertices[i1.VertexIndex];
+            var wp2 = _worldVertices[i2.VertexIndex];
+            var wp3 = _worldVertices[i3.VertexIndex];
 
-            var wp1 = _worldVertices[i1];
-            var wp2 = _worldVertices[i2];
-            var wp3 = _worldVertices[i3];
+            var ow1 = oneOverWs[i1.VertexIndex];
+            var ow2 = oneOverWs[i2.VertexIndex];
+            var ow3 = oneOverWs[i3.VertexIndex];
+
+            var uv1 = _textureCoordinates[i1.UvIndex];
+            var uv2 = _textureCoordinates[i2.UvIndex];
+            var uv3 = _textureCoordinates[i3.UvIndex];
 
             Rasterization.ScanlineTriangle(
                 (_width, _height),
-                new Rasterization.VertexData(p1, n1, wp1),
-                new Rasterization.VertexData(p2, n2, wp2),
-                new Rasterization.VertexData(p3, n3, wp3),
-                (x, y, interpolatedNormal, worldP) =>
+                new Rasterization.VertexData(p1,  wp1, uv1, ow1),
+                new Rasterization.VertexData(p2,  wp2, uv2, ow2),
+                new Rasterization.VertexData(p3,  wp3, uv3, ow3),
+                (x, y, worldP, uv) =>
                 {
                     var z = GetZ(x, y, p1, p2, p3);
                     lock (_zBuffer)
@@ -193,7 +212,10 @@ namespace lab1
                         if (_zBuffer[x, y] > z)
                         {
                             _zBuffer[x, y] = z;
-                            var color = ComputePhongColor(interpolatedNormal, worldP);
+                            var texColor = _diffuseTexture.Color(uv.X, uv.Y);
+                            var normalFromMap = _normalMap?.Normal(uv.X, uv.Y) ?? new Vector3(0, 0, 1);
+                            var specular = _specularMap?.Specular(uv.X, uv.Y) ?? 0;
+                            var color = ComputePhongColorWithTextures(normalFromMap, worldP, texColor.ToVector3(), specular);
                             ptr[y * stride + x] = ColorFromVector(color).ToArgb();
                         }
                     }
@@ -262,55 +284,74 @@ namespace lab1
             _zBuffer = new float[_width, _height];
         }
 
-        private Vector3 ComputePhongColor(Vector3 N, Vector3 wp)
+        private Vector3 ComputePhongColorWithTextures(Vector3 normalMapNormal, Vector3 wp, Vector3 texColor, float specular)
         {
-            Vector3 viewDir = Vector3Utils.NormalizeSafe(_transformer.ObserverTransform.Eye - wp); // Вычисление направления взгляда (view direction)
-            Vector3 L = Vector3Utils.NormalizeSafe(-_light); // Вычисление направления света
+            Vector3 viewDir = Vector3Utils.NormalizeSafe(_transformer.ObserverTransform.Eye - wp);
+            Vector3 L = Vector3Utils.NormalizeSafe(-_light);
 
-            float ndotl = Math.Max(Vector3Utils.SafeDot(N, L), 0); // скалярное произведение нормали и направления света (косинус угла между ними)
-            Vector3 diffuse = _diffuseCoeff * _color * ndotl;
+            Vector3 N = Vector3Utils.NormalizeSafe(normalMapNormal);
 
-            Vector3 R = Vector3.Reflect(-L, N); // отражённый луч от поверхности
-            float rdotv = Math.Max(Vector3Utils.SafeDot(R, viewDir), 0); // косинус угла между отражённым лучом и направлением взгляда.
-            Vector3 specular = _color * (float)Math.Pow(rdotv, _specularPower);
+            Vector3 ambient = texColor * _ambientCoeff;
 
-            return Vector3.Clamp(_ambient + diffuse + specular, Vector3.Zero, new Vector3(255, 255, 255));
+            float ndotl = Math.Max(Vector3Utils.SafeDot(N, L), 0);
+            Vector3 diffuse = _diffuseCoeff * texColor * ndotl;
+
+            Vector3 R = Vector3.Reflect(-L, N);
+            float rdotv = Math.Max(Vector3Utils.SafeDot(R, viewDir), 0);
+            Vector3 specularV3 = texColor * (float)Math.Pow(rdotv, _specularPower) * (1 - specular);
+
+            return Vector3.Clamp(ambient + diffuse + specularV3, Vector3.Zero, new Vector3(255, 255, 255));
         }
 
-        private Vector3[] ComputeVertexNormals()
-        {
-            int vCount = _vertices.Count;
-            var normals = new Vector3[vCount]; // Создаём массив векторов нормалей для каждой вершины
-            var counts = new int[vCount];
+        //private Vector3 ComputePhongColor(Vector3 N, Vector3 wp, Vector2 uv, Vector3 texColor)
+        //{
+        //    Vector3 viewDir = Vector3Utils.NormalizeSafe(_transformer.ObserverTransform.Eye - wp);
+        //    Vector3 L = Vector3Utils.NormalizeSafe(-_light);
 
-            foreach (var (i1, i2, i3) in _triangles)
-            {
-                var A = _transformer.TransformToWorld(_vertices[i1]);
-                var B = _transformer.TransformToWorld(_vertices[i2]);
-                var C = _transformer.TransformToWorld(_vertices[i3]);
-                Vector3 faceNormal = Vector3Utils.NormalizeSafe(Vector3.Cross(B - A, C - A)); // векторное произведение этих двух векторов
-                                                                                              // даёт вектор перпендикулярный плоскости треугольника
+        //    float ndotl = Math.Max(Vector3Utils.SafeDot(N, L), 0);
 
-                normals[i1] += faceNormal;
-                normals[i2] += faceNormal;
-                normals[i3] += faceNormal;
+        //    Vector3 diffuse = _diffuseCoeff * texColor * ndotl;
 
-                counts[i1]++; counts[i2]++; counts[i3]++;
-            }
+        //    Vector3 R = Vector3.Reflect(-L, N);
+        //    float rdotv = Math.Max(Vector3Utils.SafeDot(R, viewDir), 0);
+        //    Vector3 specular = texColor * (float)Math.Pow(rdotv, _specularPower);
 
-            for (int i = 0; i < vCount; i++)
-            {
-                if (counts[i] > 0)
-                {
-                    normals[i] = Vector3Utils.NormalizeSafe(normals[i] / counts[i]);
-                }
-                else
-                {
-                    normals[i] = Vector3.UnitY;
-                }
-            }
+        //    return Vector3.Clamp(_ambient + diffuse + specular, Vector3.Zero, new Vector3(255, 255, 255));
+        //}
 
-            return normals;
-        }
+        //private Vector3[] ComputeVertexNormals()
+        //{
+        //    int vCount = _vertices.Count;
+        //    var normals = new Vector3[vCount]; 
+        //    var counts = new int[vCount];
+
+        //    foreach (var (i1, i2, i3) in _triangles)
+        //    {
+        //        var A = _transformer.TransformToWorld(_vertices[i1]);
+        //        var B = _transformer.TransformToWorld(_vertices[i2]);
+        //        var C = _transformer.TransformToWorld(_vertices[i3]);
+        //        Vector3 faceNormal = Vector3Utils.NormalizeSafe(Vector3.Cross(B - A, C - A)); 
+
+        //        normals[i1] += faceNormal;
+        //        normals[i2] += faceNormal;
+        //        normals[i3] += faceNormal;
+
+        //        counts[i1]++; counts[i2]++; counts[i3]++;
+        //    }
+
+        //    for (int i = 0; i < vCount; i++)
+        //    {
+        //        if (counts[i] > 0)
+        //        {
+        //            normals[i] = Vector3Utils.NormalizeSafe(normals[i] / counts[i]);
+        //        }
+        //        else
+        //        {
+        //            normals[i] = Vector3.UnitY;
+        //        }
+        //    }
+
+        //    return normals;
+        //}
     }
 }
